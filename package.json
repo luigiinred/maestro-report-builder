@@ -1,0 +1,16 @@
+{
+  "name": "maestro-report-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compile a static, self-contained HTML report (step tree synced to video) from a maestro/.artifacts/ directory produced by SAVE_ARTIFACTS Maestro runs. No AI in the build path — pure filesystem scan + templating.",
+  "bin": {
+    "maestro-report-builder": "bin/build.js"
+  },
+  "scripts": {
+    "build": "node bin/build.js",
+    "serve": "npx --yes serve -l 8765 dist"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

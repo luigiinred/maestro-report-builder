@@ -1,0 +1,145 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1f232c;
+  --border: #2b303b;
+  --text: #e6e8ec;
+  --text-dim: #9aa1ad;
+  --accent: #5b8cff;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+h1, h2, h3 { margin: 0 0 8px; font-weight: 600; }
+
+/* ---------- Two independent scrollviews: left nav, main pane ---------- */
+.page-shell { flex: 1 1 auto; min-height: 0; display: flex; }
+.flow-nav {
+  flex: 0 0 220px; overflow-y: auto; background: var(--panel);
+  border-right: 1px solid var(--border); padding: 16px 0;
+}
+.flow-nav-title {
+  color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em;
+  padding: 0 16px; margin-bottom: 10px;
+}
+.flow-nav-item {
+  padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim);
+  border-left: 2px solid transparent;
+}
+.flow-nav-item:hover { background: var(--panel-2); }
+.flow-nav-item.active { color: var(--text); border-left-color: var(--accent); background: var(--panel-2); }
+.flow-nav-status { margin-right: 6px; }
+/* page-main itself never scrolls — it's a fixed-height column. The header stays pinned
+   (it's just a normal flex item, not part of any scroll flow); only .steps-col below
+   scrolls internally, so nav-scroll and steps-scroll are the two real scroll regions. */
+.page-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- Main header: flow title + Maestro's own report links (pinned, doesn't scroll) ---------- */
+.main-header {
+  flex: 0 0 auto;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 24px 24px 0; margin-bottom: 16px; flex-wrap: wrap;
+}
+.native-panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; font-size: 12px; flex: 0 0 auto;
+}
+.native-panel .title { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; margin-bottom: 6px; }
+.native-panel a { display: block; color: var(--accent); text-decoration: none; padding: 2px 0; }
+.native-panel a:hover { text-decoration: underline; }
+.native-panel .fail { color: #ff8080; }
+
+/* ---------- Steps + synced video ---------- */
+/* .steps-section fills the remaining height below the pinned header; .steps-synced is its
+   body, stretched to that full height so the video can grow to fill it while .steps-col
+   scrolls internally. */
+.steps-section { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 0 24px 24px; }
+.steps-header, .steps-summary { flex: 0 0 auto; }
+.steps-synced { flex: 1 1 auto; min-height: 0; display: flex; gap: 24px; align-items: stretch; }
+.steps-col { flex: 1 1 380px; min-width: 320px; overflow-y: auto; }
+.video-col { flex: 1 1 340px; max-width: 520px; display: flex; flex-direction: column; }
+.video-col video { flex: 1 1 auto; min-height: 0; width: 100%; object-fit: contain; border-radius: 8px; background: #000; }
+.video-col .seek-hint { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; margin-top: 8px; }
+.steps-summary { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: var(--text-dim); }
+.steps-summary b { color: var(--text); }
+
+/* Full-width rows, flat list — nesting is expressed via inline padding-left keyed on depth,
+   not <ul> indent, so hover/current/failed backgrounds run edge-to-edge at every depth. */
+.steps-tree, .steps-tree ul { list-style: none; margin: 0; padding: 0; }
+.step-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  cursor: pointer; font-size: 13px; border-radius: 4px;
+}
+.step-row:hover { background: var(--panel-2); }
+.step-row.current-step { background: rgba(91,140,255,0.20); }
+.step-row.status-failed { background: rgba(255,80,80,0.14); }
+.step-row.status-failed:hover { background: rgba(255,80,80,0.22); }
+.step-row.status-failed.current-step { background: rgba(255,80,80,0.3); }
+.step-row.dim .step-label { color: var(--text-dim); }
+.disclosure-chevron {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: 0 0 auto; color: var(--text-dim); cursor: pointer;
+  transition: transform 0.1s;
+}
+.disclosure-chevron:hover { color: var(--text); }
+.step-group[open] > .step-row .disclosure-chevron { transform: rotate(90deg); }
+.step-group > .step-row { list-style: none; }
+.step-group > .step-row::-webkit-details-marker { display: none; }
+.step-group > .step-row::marker { display: none; content: ""; }
+.step-icon { flex: 0 0 auto; width: 16px; height: 16px; display: inline-flex; }
+.step-label { color: var(--text); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-duration {
+  flex: 0 0 auto; color: var(--text-dim); font-size: 11px; display: inline-flex;
+  align-items: center; gap: 3px;
+}
+.step-thumb {
+  flex: 0 0 auto; width: 22px; height: 22px; object-fit: cover; border-radius: 3px;
+  border: 1px solid var(--border); cursor: zoom-in;
+}
+.steps-loading, .steps-error { color: var(--text-dim); font-size: 13px; }
+
+/* ---------- Screenshot lightbox (opened from a step's inline thumbnail) ---------- */
+.lightbox {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+  display: none; align-items: center; justify-content: center; z-index: 200; cursor: zoom-out;
+}
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
+
+/* ---------- Step details tooltip (hover a row to see its raw parameters) ---------- */
+.step-tooltip {
+  position: fixed; z-index: 300; max-width: 420px; pointer-events: none;
+  background: #202430; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 11px; display: none;
+}
+.step-tooltip.open { display: block; }
+.step-tooltip .tt-title { color: var(--text); font-weight: 600; margin-bottom: 6px; font-size: 12px; }
+.step-tooltip pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-dim);
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+
+/* ---------- Steps settings popup ---------- */
+.steps-header { display: flex; align-items: center; gap: 10px; position: relative; margin-bottom: 10px; }
+.settings-btn {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.settings-btn:hover { background: var(--accent); border-color: var(--accent); }
+.settings-popup {
+  position: absolute; top: 32px; left: 0; z-index: 50; width: 280px;
+  background: #202430; border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 12px;
+}
+.settings-popup .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.settings-popup .divider { border-top: 1px solid var(--border); margin: 8px 0; }
+.settings-popup .group-title { color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; margin-bottom: 4px; }
+.settings-popup .key-list { max-height: 220px; overflow-y: auto; }
+.settings-popup label { cursor: pointer; }
