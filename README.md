@@ -22,18 +22,30 @@ Per flow found under the artifacts directory:
 
 - A **step tree** parsed from Maestro's own `commands.json` — full-width rows, pass/fail/skip
   status icons, a right-side timestamp calibrated to the real recording length, inline
-  screenshot thumbnails on the row that captured them, a hover tooltip showing each step's raw
-  parameters.
+  screenshot thumbnails on the row that captured them, and a collapsible bottom inspector panel
+  (hover a row to see its raw parameters there).
 - A **synced video player** — click a step (or use ↑/↓) to jump the video there; while the
   video is playing, the step list follows along instead.
 - A **Screenshots tab** alongside the step tree, showing every screenshot captured during the
   flow as a grid in capture order (derived from `commands.json` timestamps), each tagged with
-  its seek time.
-- A **left nav** to switch between every flow found, each marked pass/fail.
+  its seek time — plus the flow's auto-captured failure screenshot (see below), if any.
+- A **left nav** with a real folder tree (flows nested under directories collapse the way
+  GitHub's file tree does) and a filter box.
 
-Maestro's own native artifacts (`report.html`, `commands.json`, `maestro.log`, and any
-auto-captured failure screenshot) are still copied into each flow's output subdirectory — they're
-just not linked from the generated UI anymore.
+Across the whole run:
+
+- A global **Snapshots page** (the sidebar's other tab, alongside Flows) — every flow's
+  screenshots on one page, grouped into a section per flow labeled with its pass/fail status. A
+  flow with none still gets a section, just with a "No snapshots" placeholder.
+- Clicking any screenshot — from a step row, the per-flow Screenshots tab, or the global
+  Snapshots page — opens the same fullscreen lightbox (arrow keys, a filmstrip, prev/next). Only
+  the Snapshots page's lightbox navigates *across* flows: crossing from one flow's shots into
+  the next's updates which flow is selected in the sidebar.
+
+Maestro's own native artifacts (`report.html`, `commands.json`, `maestro.log`) are still copied
+into each flow's output subdirectory but not linked from the generated UI; the auto-captured
+failure screenshot is the exception — it shows up as a regular (red-bordered) screenshot in both
+the per-flow Screenshots tab and the global Snapshots page.
 
 ## The SAVE_ARTIFACTS pattern (source-side prerequisite)
 

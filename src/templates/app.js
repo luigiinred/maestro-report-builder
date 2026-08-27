@@ -7,13 +7,18 @@
 // collapsing them.
 const settings = {
   hideSkipped: true,
-  inspectOnHover: true,
   hiddenFilterKeys: new Set([
     "defineVariablesCommand",
     "applyConfigurationCommand",
     "runFlowCommand:setEnv.yml",
   ]),
 };
+
+// Whether the bottom inspector panel (Steps tab) is open — persists across flow switches and
+// re-renders, unlike `settings` above which is only ever mutated from its own popup.
+let inspectorOpen = false;
+
+const INSPECTOR_ICON = `<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.75 2A.75.75 0 0 0 1 2.75v10.5c0 .414.336.75.75.75h12.5a.75.75 0 0 0 .75-.75V2.75a.75.75 0 0 0-.75-.75ZM2.5 3.5h11v6.25h-11Zm0 7.75h11v1.75h-11Z"/></svg>`;
 
 // A plain command key (e.g. "applyConfigurationCommand") is filterable directly, but
 // runFlowCommand wraps many unrelated things — SAVE_ARTIFACTS gates, onboarding, setEnv.yml,
@@ -59,6 +64,9 @@ function setFlow(key) {
   const url = new URL(window.location);
   url.searchParams.set("flow", key);
   history.replaceState(null, "", url);
+  // Picking a specific flow (from the tree, or via the sidebar) always means "show me that
+  // flow's steps" — even if the Snapshots page was open when it was clicked.
+  currentView = "flow";
   renderMain();
 }
 
@@ -249,10 +257,10 @@ function formatSeek(seconds) {
 // takeScreenshotCommand's own `path` field is the unresolved "${ARTIFACTS_DIR}/<flow>/<name>"
 // template Maestro recorded, not a real filesystem path — but its basename matches a name in
 // the flow's `screenshots` manifest array, so match on that to find the real image to thumbnail.
-function screenshotForCommand(key, body) {
+function screenshotForCommand(key, body, flow = currentFlow()) {
   if (key !== "takeScreenshotCommand" || !body.path) return null;
   const name = body.path.split("/").pop();
-  return (currentFlow().screenshots || []).find((s) => s.name === name) || null;
+  return (flow.screenshots || []).find((s) => s.name === name) || null;
 }
 
 // Row -> raw command parameters, for the hover tooltip. Reset at the top of every
@@ -340,30 +348,87 @@ function renderCommandNode(entry, metadata, recordingStartTs, metadataByCommand,
 // (see the flattening note above renderCommandNode) — no separate dedup pass needed, just sort
 // by timestamp and match each to its file via screenshotForCommand(). Without commands.json,
 // there's no capture order to recover, so fall back to scan.js's on-disk listing as-is.
-function computeOrderedScreenshots() {
-  const flow = currentFlow();
+//
+// Also appends the flow's auto-captured failure screenshot (Maestro's own native-reporting
+// output, see scan.js's failureScreenshotFile) as a trailing entry when present — it isn't part
+// of the take-screenshot sequence in commands.json (it comes from a separate debug run), so
+// there's no real capture timestamp for it, just a fixed spot at the end.
+function computeOrderedScreenshots(flowKey) {
+  const flow = MANIFEST[flowKey];
+  if (!flow) return [];
   const data = flow.stepsData;
+  const shots = [];
   if (!data || data.length === 0) {
-    return (flow.screenshots || []).map((s) => ({ screenshot: s, seekSeconds: null, label: null }));
+    (flow.screenshots || []).forEach((s) => shots.push({ screenshot: s, seekSeconds: null, label: null }));
+  } else {
+    const startEntry = data.find((d) => Object.keys(d.command)[0] === "startRecordingCommand");
+    const startTs = startEntry ? startEntry.metadata.timestamp : null;
+    [...data]
+      .sort((a, b) => a.metadata.timestamp - b.metadata.timestamp)
+      .filter((d) => Object.keys(d.command)[0] === "takeScreenshotCommand")
+      .forEach((d) => {
+        const body = d.command.takeScreenshotCommand;
+        const screenshot = screenshotForCommand("takeScreenshotCommand", body, flow);
+        if (!screenshot) return;
+        const seekSeconds = startTs != null ? Math.max(0, (d.metadata.timestamp - startTs) / 1000) : null;
+        shots.push({ screenshot, seekSeconds, label: body.label || null });
+      });
   }
-  const startEntry = data.find((d) => Object.keys(d.command)[0] === "startRecordingCommand");
-  const startTs = startEntry ? startEntry.metadata.timestamp : null;
-  return [...data]
-    .sort((a, b) => a.metadata.timestamp - b.metadata.timestamp)
-    .filter((d) => Object.keys(d.command)[0] === "takeScreenshotCommand")
-    .map((d) => {
-      const body = d.command.takeScreenshotCommand;
-      const screenshot = screenshotForCommand("takeScreenshotCommand", body);
-      if (!screenshot) return null;
-      const seekSeconds = startTs != null ? Math.max(0, (d.metadata.timestamp - startTs) / 1000) : null;
-      return { screenshot, seekSeconds, label: body.label || null };
-    })
-    .filter(Boolean);
+  if (flow.native && flow.native.failureScreenshot) {
+    shots.push({
+      screenshot: { name: "failure-screenshot", src: flow.native.failureScreenshot },
+      seekSeconds: null,
+      label: "Auto-captured on failure",
+      isFailure: true,
+    });
+  }
+  return shots;
+}
+
+// Same leaf order the sidebar tree renders in (folders-before-flows, alphabetical) — reused so
+// the global Snapshots page and the sidebar agree on ordering, without needing the sidebar's
+// display-only path compaction.
+function allFlowKeysInOrder() {
+  const tree = buildFlowTree(Object.entries(MANIFEST));
+  const keys = [];
+  (function walk(node) {
+    sortedFlowChildren(node).forEach((child) => {
+      if (child.type === "flow") keys.push(child.key);
+      else walk(child);
+    });
+  })(tree);
+  return keys;
+}
+
+// The flat cross-flow list the global lightbox (opened from the Snapshots page) navigates —
+// every flow's screenshots back to back, each tagged with its own flow so the lightbox can
+// update the current flow selection as ←/→ crosses from one flow's shots into the next's.
+function computeAllScreenshots() {
+  return allFlowKeysInOrder().flatMap((key) => {
+    const flow = MANIFEST[key];
+    return computeOrderedScreenshots(key).map((o) => ({ ...o, flowKey: key, flowLabel: flow.label }));
+  });
+}
+
+// Shared between the per-flow Screenshots tab and the global Snapshots page. `isFailure`
+// entries (see computeOrderedScreenshots) get a red-tinted border and a warning glyph in place
+// of a seek time, since they have neither.
+function renderScreenshotCard(o, index) {
+  const name = o.label || o.screenshot.name;
+  return `
+    <figure class="screenshot-card${o.isFailure ? " is-failure" : ""}" data-index="${index}">
+      <img src="${o.screenshot.src}" alt="${escapeHtml(name)}" />
+      <figcaption>
+        <span class="sc-index">${index + 1}</span>
+        <span class="sc-name">${escapeHtml(name)}</span>
+        ${o.seekSeconds != null ? `<span class="sc-seek">${formatSeek(o.seekSeconds)}</span>` : o.isFailure ? `<span class="sc-seek sc-fail">&#9888;</span>` : ""}
+      </figcaption>
+    </figure>`;
 }
 
 function renderScreenshotsTab() {
   const el = document.getElementById("screenshots-section");
-  const ordered = computeOrderedScreenshots();
+  const ordered = computeOrderedScreenshots(currentFlowKey());
   const hasStepsData = !!(currentFlow().stepsData && currentFlow().stepsData.length);
 
   if (ordered.length === 0) {
@@ -374,19 +439,7 @@ function renderScreenshotsTab() {
   el.innerHTML = `
     ${hasStepsData ? "" : `<div class="seek-hint" style="margin-bottom:12px;">No commands.json for this flow — showing on-disk order, not confirmed capture order.</div>`}
     <div class="screenshot-grid">
-      ${ordered
-        .map(
-          (o, i) => `
-        <figure class="screenshot-card" data-index="${i}">
-          <img src="${o.screenshot.src}" alt="${escapeHtml(o.label || o.screenshot.name)}" />
-          <figcaption>
-            <span class="sc-index">${i + 1}</span>
-            <span class="sc-name">${escapeHtml(o.label || o.screenshot.name)}</span>
-            ${o.seekSeconds != null ? `<span class="sc-seek">${formatSeek(o.seekSeconds)}</span>` : ""}
-          </figcaption>
-        </figure>`
-        )
-        .join("")}
+      ${ordered.map((o, i) => renderScreenshotCard(o, i)).join("")}
     </div>`;
 
   el.querySelectorAll(".screenshot-card img").forEach((img, i) => {
@@ -394,7 +447,55 @@ function renderScreenshotsTab() {
   });
 }
 
+// The "Snapshots" sidebar tab — every flow's screenshots on one page, grouped into a section
+// per flow (labeled with its pass/fail status), independent of whatever flow happens to be
+// selected. A flow with none still gets a section, just with a "No snapshots" placeholder,
+// rather than disappearing from the page.
+function renderGlobalSnapshotsView() {
+  const el = document.getElementById("main-view-snapshots");
+  const flowKeys = allFlowKeysInOrder();
+
+  const sections = flowKeys
+    .map((key) => {
+      const flow = MANIFEST[key];
+      const shots = computeOrderedScreenshots(key);
+      const statusClass = flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown";
+      const statusText = flow.passed === true ? "Passed" : flow.passed === false ? "Failed" : "No steps";
+      return `
+        <section class="snapshot-section">
+          <div class="snapshot-section-header">
+            <span class="flow-status-pill ${statusClass}">${statusText}</span>
+            <span class="snapshot-section-title">${escapeHtml(flow.label)}</span>
+            <span class="flow-key-tag">${escapeHtml(key)}</span>
+          </div>
+          ${
+            shots.length
+              ? `<div class="screenshot-grid">${shots.map((o, i) => renderScreenshotCard(o, i)).join("")}</div>`
+              : `<div class="snapshot-section-empty">No snapshots</div>`
+          }
+        </section>`;
+    })
+    .join("");
+
+  el.innerHTML = `
+    <div class="snapshots-page-header">
+      <h1>All Snapshots</h1>
+      <span class="flow-key-tag">${flowKeys.length} flow${flowKeys.length === 1 ? "" : "s"}</span>
+    </div>
+    <div class="snapshots-page-body">${sections || `<div class="steps-error">No flows found.</div>`}</div>`;
+
+  el.querySelectorAll(".screenshot-card img").forEach((img) => {
+    img.addEventListener("click", () => openLightbox(img.getAttribute("src"), { global: true }));
+  });
+}
+
 let activeTab = "steps";
+
+// Top-level page: "flow" shows the selected flow's Steps/Screenshots tabs (#main-view-flow),
+// "snapshots" shows the cross-flow grid (#main-view-snapshots) — toggled by the sidebar's
+// Flows/Snapshots tabs, independent of `activeTab` above (that's the Steps/Screenshots split
+// *within* the flow view).
+let currentView = "flow";
 
 function renderTabs() {
   document.querySelectorAll(".pr-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === activeTab));
@@ -407,6 +508,13 @@ document.querySelectorAll(".pr-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     activeTab = btn.dataset.tab;
     renderTabs();
+  });
+});
+
+document.querySelectorAll(".view-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    currentView = btn.dataset.view;
+    renderMain();
   });
 });
 
@@ -533,10 +641,6 @@ function renderSettingsPopup() {
       <input type="checkbox" id="hide-skipped-toggle" ${settings.hideSkipped ? "checked" : ""} />
       <label for="hide-skipped-toggle">Hide skipped steps</label>
     </div>
-    <div class="row">
-      <input type="checkbox" id="inspect-hover-toggle" ${settings.inspectOnHover ? "checked" : ""} />
-      <label for="inspect-hover-toggle">Show details on hover</label>
-    </div>
     <div class="divider"></div>
     <div class="group-title">Show / hide command types</div>
     <div class="key-list">${keyRows}</div>`;
@@ -546,10 +650,6 @@ function wireSettingsPopup(popupEl) {
   popupEl.querySelector("#hide-skipped-toggle").addEventListener("change", (e) => {
     settings.hideSkipped = e.target.checked;
     renderStepsList();
-  });
-  popupEl.querySelector("#inspect-hover-toggle").addEventListener("change", (e) => {
-    settings.inspectOnHover = e.target.checked;
-    if (!settings.inspectOnHover) document.getElementById("step-tooltip").classList.remove("open");
   });
   popupEl.querySelectorAll("[data-filter-key]").forEach((cb) => {
     cb.addEventListener("change", (e) => {
@@ -598,26 +698,23 @@ function renderStepsList() {
     .map((d) => `<li>${renderCommandNode(d.command, d.metadata, RECORDING_START_TS, METADATA_BY_COMMAND, 0)}</li>`)
     .join("");
 
-  // Hover a row to see its raw command parameters — directly answers "what condition/config/
-  // selector is this step actually using?" for otherwise-opaque labels like "Apply configuration".
-  // Gated on settings.inspectOnHover (toggle in the gear popup) so it can be turned off.
-  const tooltip = document.getElementById("step-tooltip");
+  // Hover a row to see its raw command parameters in the bottom inspector panel — directly
+  // answers "what condition/config/selector is this step actually using?" for otherwise-opaque
+  // labels like "Apply configuration". Gated on `inspectorOpen` (the panel's own toggle) rather
+  // than a separate setting — there's no reason to compute this while the panel is closed.
+  // Content deliberately isn't cleared on mouseleave: unlike a cursor-following tooltip, this
+  // panel is meant to stay put and be read after the mouse has moved on.
+  const inspectorContent = document.getElementById("inspector-content");
+  const inspectorSubtitle = document.getElementById("inspector-subtitle");
   listEl.querySelectorAll("[data-row-id]").forEach((row) => {
     row.addEventListener("mouseenter", () => {
-      if (!settings.inspectOnHover) return;
+      if (!inspectorOpen) return;
       const info = ROW_DETAILS.get(row.dataset.rowId);
       if (!info) return;
       const hasParams = Object.keys(info.params).length > 0;
-      tooltip.innerHTML = `<div class="tt-title">${info.title}</div><pre>${
-        hasParams ? escapeHtml(JSON.stringify(info.params, null, 2)) : "(no parameters)"
-      }</pre>`;
-      tooltip.classList.add("open");
+      inspectorSubtitle.textContent = info.title;
+      inspectorContent.textContent = hasParams ? JSON.stringify(info.params, null, 2) : "(no parameters)";
     });
-    row.addEventListener("mousemove", (e) => {
-      tooltip.style.left = Math.min(e.clientX + 16, window.innerWidth - 440) + "px";
-      tooltip.style.top = Math.min(e.clientY + 16, window.innerHeight - 20) + "px";
-    });
-    row.addEventListener("mouseleave", () => tooltip.classList.remove("open"));
   });
 
   // The whole row seeks; only its disclosure chevron (group rows only) toggles collapse.
@@ -667,6 +764,7 @@ function renderSteps() {
   el.innerHTML = `
     <div class="steps-header">
       <button id="steps-settings-btn" class="settings-btn" title="Show/hide command types">&#9881;</button>
+      <button id="inspector-toggle-btn" class="settings-btn${inspectorOpen ? " active" : ""}" title="Toggle inspector panel">${INSPECTOR_ICON}</button>
       <div id="steps-settings-popup" class="settings-popup" hidden></div>
     </div>
     <div class="steps-summary" id="steps-summary"></div>
@@ -676,6 +774,15 @@ function renderSteps() {
         ${flow.video ? `<video id="steps-video" src="${flow.video}" controls></video>` : `<div class="steps-error">No recording for this flow.</div>`}
         ${RECORDING_START_TS && RECORDING_STOP_TS ? "" : `<div class="seek-hint">Recording start/stop not both found; steps aren't seekable.</div>`}
       </div>
+    </div>
+    <div class="inspector-panel" id="inspector-panel"${inspectorOpen ? "" : " hidden"}>
+      <div class="resizer inspector-resizer" id="inspector-resizer"></div>
+      <div class="inspector-header">
+        <span class="inspector-title">Inspector</span>
+        <span class="inspector-subtitle" id="inspector-subtitle">Hover a step to see its raw parameters</span>
+        <button class="inspector-close-btn" id="inspector-close-btn" title="Hide inspector" aria-label="Hide inspector">&times;</button>
+      </div>
+      <pre class="inspector-content" id="inspector-content"></pre>
     </div>`;
 
   const popup = document.getElementById("steps-settings-popup");
@@ -693,6 +800,17 @@ function renderSteps() {
     if (!popup.hidden && !popup.contains(e.target) && e.target !== settingsBtn) popup.hidden = true;
   });
 
+  const inspectorToggleBtn = document.getElementById("inspector-toggle-btn");
+  const inspectorPanel = document.getElementById("inspector-panel");
+  const inspectorCloseBtn = document.getElementById("inspector-close-btn");
+  function setInspectorOpen(open) {
+    inspectorOpen = open;
+    inspectorPanel.hidden = !open;
+    inspectorToggleBtn.classList.toggle("active", open);
+  }
+  inspectorToggleBtn.addEventListener("click", () => setInspectorOpen(!inspectorOpen));
+  inspectorCloseBtn.addEventListener("click", () => setInspectorOpen(false));
+
   const video = document.getElementById("steps-video");
   if (video) {
     video.addEventListener("timeupdate", () => {
@@ -704,18 +822,31 @@ function renderSteps() {
   renderStepsList();
 }
 
-function renderMain() {
+function renderFlowMainView() {
   const flow = currentFlow();
   document.getElementById("flow-title").textContent = flow.label;
   document.getElementById("flow-key-tag").textContent = currentFlowKey();
   const pill = document.getElementById("flow-status-pill");
   pill.className = `flow-status-pill ${flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown"}`;
   pill.textContent = flow.passed === true ? "Passed" : flow.passed === false ? "Failed" : "No steps";
-  renderFlowNav();
   renderSteps();
-  document.getElementById("screenshots-tab-count").textContent = computeOrderedScreenshots().length;
+  restoreResizerSizes();
+  document.getElementById("screenshots-tab-count").textContent = computeOrderedScreenshots(currentFlowKey()).length;
   activeTab = "steps";
   renderTabs();
+}
+
+function renderMain() {
+  renderFlowNav();
+  document.querySelectorAll(".view-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === currentView));
+  updateSidebarVisibility();
+  document.getElementById("main-view-flow").hidden = currentView !== "flow";
+  document.getElementById("main-view-snapshots").hidden = currentView !== "snapshots";
+  if (currentView === "snapshots") {
+    renderGlobalSnapshotsView();
+  } else {
+    renderFlowMainView();
+  }
 }
 
 const lightbox = document.getElementById("lightbox");
@@ -725,12 +856,15 @@ const lightboxPrevBtn = document.getElementById("lightbox-prev");
 const lightboxNextBtn = document.getElementById("lightbox-next");
 const lightboxFilmstrip = document.getElementById("lightbox-filmstrip");
 
-// The lightbox always navigates the *current flow's full capture-order list* (same one the
+// By default the lightbox navigates the *current flow's full capture-order list* (same one the
 // Screenshots tab shows), regardless of whether it was opened from a step row's inline
 // thumbnail or from that tab — so ←/→ always means "previous/next screenshot taken", not
-// "next thumbnail in whichever list happened to render it".
+// "next thumbnail in whichever list happened to render it". Opened with {global: true} (only
+// from the Snapshots page) it instead navigates every flow's screenshots back to back —
+// lightboxIsGlobal gates the flow-sync behavior in renderLightboxContent() below.
 let lightboxList = [];
 let lightboxIndex = -1;
+let lightboxIsGlobal = false;
 
 // The filmstrip's <img> elements are only rebuilt here (once per open), not on every nav step —
 // renderLightboxContent() just toggles .active and scrolls, so stepping through never reloads
@@ -754,8 +888,9 @@ function renderLightboxContent() {
   if (!item) return;
   lightboxImg.src = item.screenshot.src;
   const name = item.label || item.screenshot.name;
+  const displayName = lightboxIsGlobal && item.flowLabel ? `${item.flowLabel} / ${name}` : name;
   const time = item.seekSeconds != null ? formatSeek(item.seekSeconds) : null;
-  lightboxCaption.innerHTML = `<span class="lb-name">${escapeHtml(name)}</span>${
+  lightboxCaption.innerHTML = `<span class="lb-name">${escapeHtml(displayName)}</span>${
     time ? `<span class="lb-time">${time}</span>` : ""
   }`;
   const hasMultiple = lightboxList.length > 1;
@@ -767,10 +902,21 @@ function renderLightboxContent() {
   });
   const activeThumb = lightboxFilmstrip.querySelector(".filmstrip-thumb.active");
   if (activeThumb) activeThumb.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+
+  // Crossing into another flow's screenshots updates which flow is "selected" (sidebar
+  // highlight + ?flow= in the URL) — cheaply, without a full renderMain(), since the lightbox
+  // sits on top of and hides whatever the main content currently is.
+  if (lightboxIsGlobal && item.flowKey && item.flowKey !== currentFlowKey()) {
+    const url = new URL(window.location);
+    url.searchParams.set("flow", item.flowKey);
+    history.replaceState(null, "", url);
+    renderFlowNav();
+  }
 }
 
-function openLightbox(src) {
-  lightboxList = computeOrderedScreenshots();
+function openLightbox(src, { global = false } = {}) {
+  lightboxIsGlobal = global;
+  lightboxList = global ? computeAllScreenshots() : computeOrderedScreenshots(currentFlowKey());
   const found = lightboxList.findIndex((o) => o.screenshot.src === src);
   lightboxIndex = found === -1 ? 0 : found;
   buildLightboxFilmstrip();
@@ -823,17 +969,30 @@ document.addEventListener("keydown", (e) => {
   selectStep(SEEKABLE_NODES[nextIdx]);
 });
 
-// Sidebar collapse — localStorage is wrapped in try/catch since some browsers throw on it for
-// file:// origins (opening the report directly rather than through the recommended local server
-// still needs to work; only the "remember it across reloads" part is allowed to silently fail).
+// Sidebar visibility has two independent inputs that both have to agree — the user's manual
+// collapse toggle, and the top-level view (the sidebar is a flow picker, so it has nothing to
+// do on the Snapshots page and hides there regardless of the manual toggle's state). localStorage
+// is wrapped in try/catch since some browsers throw on it for file:// origins (opening the report
+// directly rather than through the recommended local server still needs to work; only the
+// "remember it across reloads" part is allowed to silently fail).
 const NAV_COLLAPSED_KEY = "maestroReportNavCollapsed";
 const flowNavWrap = document.getElementById("flow-nav-wrap");
 const flowNavCollapseBtn = document.getElementById("flow-nav-collapse-btn");
 const flowNavExpandBtn = document.getElementById("flow-nav-expand-btn");
 
+let navManuallyCollapsed = false;
+
+function updateSidebarVisibility() {
+  flowNavWrap.hidden = currentView !== "flow" || navManuallyCollapsed;
+  // The "bring the sidebar back" button only makes sense when the sidebar would otherwise be
+  // showing for this view but was manually collapsed — not on the Snapshots page, where
+  // main-view-flow (and this button, one of its children) is already hidden entirely.
+  flowNavExpandBtn.hidden = !(currentView === "flow" && navManuallyCollapsed);
+}
+
 function setNavCollapsed(collapsed) {
-  flowNavWrap.hidden = collapsed;
-  flowNavExpandBtn.hidden = !collapsed;
+  navManuallyCollapsed = collapsed;
+  updateSidebarVisibility();
   try {
     localStorage.setItem(NAV_COLLAPSED_KEY, collapsed ? "1" : "0");
   } catch {}
@@ -842,10 +1001,92 @@ function setNavCollapsed(collapsed) {
 flowNavCollapseBtn.addEventListener("click", () => setNavCollapsed(true));
 flowNavExpandBtn.addEventListener("click", () => setNavCollapsed(false));
 
-let storedNavCollapsed = false;
 try {
-  storedNavCollapsed = localStorage.getItem(NAV_COLLAPSED_KEY) === "1";
+  navManuallyCollapsed = localStorage.getItem(NAV_COLLAPSED_KEY) === "1";
 } catch {}
-setNavCollapsed(storedNavCollapsed);
+
+// Drag-to-resize for the side nav (width) and inspector panel (height). Bound once via
+// delegation on `document`, not on the handle elements directly — `#inspector-resizer` is
+// recreated by every renderSteps() call (steps-section's innerHTML swap), so binding straight to
+// the handle would mean re-attaching (and leaking) a fresh set of document mousemove/mouseup
+// listeners on every flow switch instead of resolving the current element by id each time.
+const RESIZE_CONFIGS = {
+  "nav-resizer": {
+    getTarget: () => document.getElementById("flow-nav-wrap"),
+    axis: "x",
+    min: 160,
+    max: 480,
+    storageKey: "maestroReportNavWidth",
+  },
+  "inspector-resizer": {
+    getTarget: () => document.getElementById("inspector-panel"),
+    axis: "y",
+    invert: true, // handle sits on the panel's top edge — dragging up (smaller clientY) grows it
+    min: 120,
+    max: 500,
+    storageKey: "maestroReportInspectorHeight",
+  },
+};
+
+let activeResize = null;
+
+document.addEventListener("mousedown", (e) => {
+  const handle = e.target.closest(".resizer");
+  if (!handle) return;
+  const config = RESIZE_CONFIGS[handle.id];
+  const target = config && config.getTarget();
+  if (!target) return;
+  const rect = target.getBoundingClientRect();
+  activeResize = {
+    config,
+    handle,
+    startPos: config.axis === "x" ? e.clientX : e.clientY,
+    startSize: config.axis === "x" ? rect.width : rect.height,
+  };
+  handle.classList.add("resizing");
+  document.body.style.cursor = config.axis === "x" ? "col-resize" : "row-resize";
+  document.body.style.userSelect = "none";
+  e.preventDefault();
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!activeResize) return;
+  const { config, startPos, startSize } = activeResize;
+  const target = config.getTarget();
+  if (!target) return;
+  const clientPos = config.axis === "x" ? e.clientX : e.clientY;
+  const rawDelta = clientPos - startPos;
+  const size = Math.max(config.min, Math.min(config.max, startSize + (config.invert ? -rawDelta : rawDelta)));
+  target.style.flex = `0 0 ${size}px`;
+});
+
+document.addEventListener("mouseup", () => {
+  if (!activeResize) return;
+  const { config, handle } = activeResize;
+  const target = config.getTarget();
+  handle.classList.remove("resizing");
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  if (target) {
+    try {
+      localStorage.setItem(config.storageKey, target.style.flexBasis);
+    } catch {}
+  }
+  activeResize = null;
+});
+
+// Re-applied on every renderMain() (not just at startup) because the inspector panel's DOM is
+// rebuilt on every flow switch and would otherwise reset to its CSS default size each time.
+function restoreResizerSizes() {
+  Object.values(RESIZE_CONFIGS).forEach((config) => {
+    let saved = null;
+    try {
+      saved = localStorage.getItem(config.storageKey);
+    } catch {}
+    if (!saved) return;
+    const target = config.getTarget();
+    if (target) target.style.flex = `0 0 ${saved}`;
+  });
+}
 
 renderMain();
