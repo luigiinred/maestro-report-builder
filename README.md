@@ -26,9 +26,14 @@ Per flow found under the artifacts directory:
   parameters.
 - A **synced video player** — click a step (or use ↑/↓) to jump the video there; while the
   video is playing, the step list follows along instead.
-- Links to **Maestro's own native artifacts** (`report.html`, `commands.json`, `maestro.log`,
-  and any auto-captured failure screenshot) alongside the generated view.
+- A **Screenshots tab** alongside the step tree, showing every screenshot captured during the
+  flow as a grid in capture order (derived from `commands.json` timestamps), each tagged with
+  its seek time.
 - A **left nav** to switch between every flow found, each marked pass/fail.
+
+Maestro's own native artifacts (`report.html`, `commands.json`, `maestro.log`, and any
+auto-captured failure screenshot) are still copied into each flow's output subdirectory — they're
+just not linked from the generated UI anymore.
 
 ## The SAVE_ARTIFACTS pattern (source-side prerequisite)
 
@@ -126,16 +131,24 @@ tool works around cleverly. The `generate-report` skill runs both invocations fo
 
 ## Usage
 
+Without installing anything, straight from GitHub:
+
 ```bash
-node bin/build.js <path-to-maestro-.artifacts-dir> [outputDir]
+npx github:luigiinred/maestro-report-builder <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N]
+```
+
+Or from a local clone:
+
+```bash
+node bin/build.js <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N]
 # e.g.
-node bin/build.js ~/Developer/your-app/maestro/.artifacts ./dist
+node bin/build.js ~/Developer/your-app/maestro/.artifacts ./dist --serve
 ```
 
 Or via npm script (defaults output to `./dist`):
 
 ```bash
-npm run build -- <path-to-maestro-.artifacts-dir>
+npm run build -- <path-to-maestro-.artifacts-dir> --serve
 ```
 
 This produces `<outputDir>/` containing `index.html`, `app.css`, `app.js`, `manifest.js`, and
@@ -148,12 +161,8 @@ website hosting (subject to the [company-data note](#company-data-note) below).
 Video **seeking** needs a real HTTP server that supports byte-range requests. Opening
 `index.html` directly via `file://` loads fine, but scrubbing/clicking a step to seek may
 silently fail to move the video (`<video>.currentTime` gets rejected with no error when the
-server — or lack thereof — can't serve a range). Locally:
-
-```bash
-npm run serve
-# or: npx --yes serve -l 8765 dist
-```
+server — or lack thereof — can't serve a range). Pass `--serve` (optionally `--port N`, default
+8765) and the build command starts one itself — no separate step, no extra dependency.
 
 Do **not** use `python3 -m http.server` for this — it ignores Range headers entirely and has
 the same silent-seek-failure problem. S3 static website hosting supports Range requests
@@ -209,7 +218,16 @@ in sync by a few specific mechanisms:
 
 ## How discovery works (`src/scan.js`)
 
-Each direct subdirectory of the artifacts root is treated as one flow. Within it:
+A directory counts as a flow once it has any file SAVE_ARTIFACTS/native-reporting actually
+writes into it (`recording.mp4`, a `*.png`, `report.html`, or a `_maestro-native/` subfolder).
+Anything above that — a plain directory with no such files, just more subdirectories — is
+treated as a grouping folder, not a flow, and discovery recurses into it. So
+`.artifacts/viewLoginFlow/` is one flow, but `.artifacts/retirement/viewDashboard/` also works —
+`retirement/` is a grouping folder, `viewDashboard/` is the flow — and the left nav renders that
+nesting as a real folder tree instead of one flat list. Nesting can go arbitrarily deep; there's
+no requirement that every flow sit at the same depth.
+
+Within a flow directory:
 
 | What | Where it's found |
 |---|---|
@@ -218,7 +236,7 @@ Each direct subdirectory of the artifacts root is treated as one flow. Within it
 | Maestro's HTML report | `<flow>/report.html` |
 | `commands.json`, native debug log, failure screenshot | `<flow>/_maestro-native/<latest-timestamp>/` — the lexicographically-last timestamped subfolder is used if a flow was run more than once |
 | Pass/fail | Derived from `commands.json`: `passed = true` unless any step has `metadata.status === "FAILED"` |
-| Display label | Humanized from the folder name (e.g. `viewLoginFlow` → "View Login Flow") — the flow YAML's own `name:` string isn't captured anywhere in `commands.json`, so there's nothing on disk to read the real title from without also parsing the `.yml` source, which this tool doesn't do |
+| Display label | Humanized from the flow directory's own name (e.g. `viewLoginFlow` → "View Login Flow"), not its full path — the flow YAML's own `name:` string isn't captured anywhere in `commands.json`, so there's nothing on disk to read the real title from without also parsing the `.yml` source, which this tool doesn't do |
 
 ## Company-data note
 

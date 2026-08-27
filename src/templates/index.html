@@ -8,18 +8,41 @@
 <body>
   <div class="page-shell">
     <nav class="flow-nav" id="flow-nav-wrap">
-      <div class="flow-nav-title">Flows</div>
+      <div class="flow-nav-header-row">
+        <div class="flow-nav-title">Flows</div>
+        <button class="nav-toggle-btn" id="flow-nav-collapse-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.75 2A.75.75 0 0 0 1 2.75v10.5c0 .414.336.75.75.75h12.5a.75.75 0 0 0 .75-.75V2.75a.75.75 0 0 0-.75-.75Zm.75 1.5h3.5v9h-3.5Zm5 0h6v9h-6Z"/></svg>
+        </button>
+      </div>
+      <input class="flow-nav-filter" id="flow-nav-filter" type="text" placeholder="Filter flows..." />
       <div id="flow-nav"></div>
     </nav>
     <main class="page-main" id="page-main">
       <div class="main-header">
-        <h1 id="flow-title"></h1>
-        <div class="native-panel" id="native-panel"></div>
+        <div class="main-header-title-row">
+          <button class="nav-toggle-btn nav-expand-btn" id="flow-nav-expand-btn" title="Show sidebar" aria-label="Show sidebar" hidden>
+            <svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.75 2A.75.75 0 0 0 1 2.75v10.5c0 .414.336.75.75.75h12.5a.75.75 0 0 0 .75-.75V2.75a.75.75 0 0 0-.75-.75Zm.75 1.5h3.5v9h-3.5Zm5 0h6v9h-6Z"/></svg>
+          </button>
+          <span class="flow-status-pill" id="flow-status-pill"></span>
+          <h1 id="flow-title"></h1>
+          <span class="flow-key-tag" id="flow-key-tag"></span>
+        </div>
       </div>
+      <nav class="pr-tabs" id="main-tabs">
+        <button class="pr-tab active" data-tab="steps">Steps</button>
+        <button class="pr-tab" data-tab="screenshots">Screenshots <span class="tab-count" id="screenshots-tab-count"></span></button>
+      </nav>
       <div id="steps-section" class="steps-section"></div>
+      <div id="screenshots-section" class="steps-section" hidden></div>
     </main>
   </div>
-  <div class="lightbox" id="lightbox"><img id="lightbox-img" /></div>
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-nav lightbox-prev" id="lightbox-prev" aria-label="Previous screenshot">&#8249;</button>
+    <img id="lightbox-img" />
+    <div class="lightbox-caption" id="lightbox-caption"></div>
+    <button class="lightbox-nav lightbox-next" id="lightbox-next" aria-label="Next screenshot">&#8250;</button>
+    <div class="lightbox-filmstrip" id="lightbox-filmstrip"></div>
+  </div>
   <div class="step-tooltip" id="step-tooltip"></div>
 
   <script src="./manifest.js"></script>

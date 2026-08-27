@@ -62,40 +62,130 @@ function setFlow(key) {
   renderMain();
 }
 
+// GitHub-style status dots (filled circle, check/x drawn as a stroke), swapped in for the
+// plain emoji so the flow list reads like a PR "Files changed" tree rather than a checklist.
+const NAV_STATUS_ICON = {
+  true: `<svg class="flow-nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--green-bg)"/><path d="M4.5 8.3l2.2 2.2 4.8-4.8" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  false: `<svg class="flow-nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--red-bg)"/><path d="M5.3 5.3l5.4 5.4M10.7 5.3l-5.4 5.4" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>`,
+  null: `<svg class="flow-nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="var(--text-dim)"/></svg>`,
+};
+const FOLDER_ICON = `<svg class="flow-nav-icon" viewBox="0 0 16 16"><path fill="var(--text-dim)" d="M1.75 2.5A.75.75 0 0 1 2.5 1.75h3.19c.28 0 .55.11.75.31l1.06 1.06a.75.75 0 0 0 .53.22h5.27a.75.75 0 0 1 .75.75v8.66a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75V2.5Z"/></svg>`;
+
+let flowNavFilterText = "";
+
+function humanizeFolderName(name) {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
+}
+
+// Flow keys are "/"-joined directory paths (see findFlowDirs in scan.js) — this rebuilds that
+// flat list into a tree so nested flows render as a real folder tree instead of one long list
+// with slashes in the labels.
+function buildFlowTree(entries) {
+  const root = { type: "folder", name: "", children: new Map() };
+  entries.forEach(([key, flow]) => {
+    const parts = key.split("/");
+    let node = root;
+    parts.forEach((part, i) => {
+      if (i === parts.length - 1) {
+        node.children.set(part, { type: "flow", key, flow });
+      } else {
+        if (!node.children.has(part) || node.children.get(part).type !== "folder") {
+          node.children.set(part, { type: "folder", name: part, children: new Map() });
+        }
+        node = node.children.get(part);
+      }
+    });
+  });
+  return root;
+}
+
+// Prunes non-matching branches in place (the tree is rebuilt fresh every render, so mutating it
+// is safe) and reports whether anything survived, so a filter narrows the tree down to matching
+// flows and their ancestor folders instead of just greying out the rest.
+function filterFlowTree(node, needle) {
+  if (node.type === "flow") return node.flow.label.toLowerCase().includes(needle);
+  let anyMatch = false;
+  node.children.forEach((child, name) => {
+    if (filterFlowTree(child, needle)) anyMatch = true;
+    else node.children.delete(name);
+  });
+  return anyMatch;
+}
+
+// GitHub's file tree collapses a run of folders that each have exactly one (folder) child into
+// a single row showing the joined path — e.g. "__Snapshots__/CompanyBenefitsScreenSnapshotTests"
+// instead of two levels of nesting for a folder that isn't actually branching into anything.
+// Run after filterFlowTree so a filter that leaves only one child of a folder collapses it too.
+function compactFlowTree(node) {
+  if (node.type === "flow") return;
+  while (node.children.size === 1) {
+    const [[, onlyChild]] = node.children;
+    if (onlyChild.type !== "folder") break;
+    node.name = node.name ? `${node.name}/${onlyChild.name}` : onlyChild.name;
+    node.children = onlyChild.children;
+  }
+  node.children.forEach((child) => compactFlowTree(child));
+}
+
+// A compacted folder's `name` may be a "/"-joined chain (see compactFlowTree) — humanize each
+// segment on its own so e.g. "retirement/viewDashboard" doesn't get treated as one long string.
+function folderDisplayName(name) {
+  return name.split("/").map(humanizeFolderName).join("/");
+}
+
+// Folders before flows, alphabetical within each — matches the convention readers already
+// know from any file tree (GitHub, Finder, VS Code).
+function sortedFlowChildren(node) {
+  return [...node.children.values()].sort((a, b) => {
+    if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+    const an = a.type === "folder" ? folderDisplayName(a.name) : a.flow.label;
+    const bn = b.type === "folder" ? folderDisplayName(b.name) : b.flow.label;
+    return an.localeCompare(bn);
+  });
+}
+
+function renderFlowNode(node, active, depth) {
+  const indent = 8 + depth * 16;
+  if (node.type === "flow") {
+    return `
+      <div class="flow-nav-item${node.key === active ? " active" : ""}" data-flow-key="${node.key}" style="padding-left:${indent}px">
+        <span class="flow-nav-status">${NAV_STATUS_ICON[node.flow.passed]}</span><span class="flow-nav-label">${node.flow.label}</span>
+      </div>`;
+  }
+  const children = sortedFlowChildren(node)
+    .map((child) => renderFlowNode(child, active, depth + 1))
+    .join("");
+  return `
+    <details class="flow-nav-folder" open>
+      <summary class="flow-nav-folder-row" style="padding-left:${indent}px">
+        <span class="disclosure-chevron">&#9656;</span>
+        ${FOLDER_ICON}<span class="flow-nav-folder-name">${escapeHtml(folderDisplayName(node.name))}</span>
+      </summary>
+      ${children}
+    </details>`;
+}
+
 function renderFlowNav() {
   const nav = document.getElementById("flow-nav");
   const active = currentFlowKey();
-  nav.innerHTML = Object.entries(MANIFEST)
-    .map(([key, flow]) => {
-      const status = flow.passed === true ? "✅" : flow.passed === false ? "❌" : "•";
-      return `
-      <div class="flow-nav-item${key === active ? " active" : ""}" data-flow-key="${key}">
-        <span class="flow-nav-status">${status}</span>${flow.label}
-      </div>`;
-    })
-    .join("");
+  const needle = flowNavFilterText.trim().toLowerCase();
+  const tree = buildFlowTree(Object.entries(MANIFEST));
+  const hasMatch = !needle || filterFlowTree(tree, needle);
+  if (hasMatch) compactFlowTree(tree);
+  nav.innerHTML = hasMatch
+    ? sortedFlowChildren(tree)
+        .map((child) => renderFlowNode(child, active, 0))
+        .join("")
+    : `<div class="flow-nav-empty">No flows match "${flowNavFilterText}"</div>`;
   nav.querySelectorAll(".flow-nav-item").forEach((el) => {
     el.addEventListener("click", () => setFlow(el.dataset.flowKey));
   });
 }
 
-// Maestro's own reporting artifacts, per flow — populated at build time by scanning each
-// flow's _maestro-native/ directory (see src/scan.js in the generator).
-function renderNativePanel() {
-  const panel = document.getElementById("native-panel");
-  const native = currentFlow().native;
-  if (!native) {
-    panel.innerHTML = `<div class="title">Maestro's own reports</div><div style="color:var(--text-dim)">None captured for this flow.</div>`;
-    return;
-  }
-  panel.innerHTML = `
-    <div class="title">Maestro's own reports</div>
-    ${native.report ? `<a href="${native.report}" target="_blank">Full HTML report</a>` : ""}
-    ${native.commandsJson ? `<a href="${native.commandsJson}" target="_blank">commands.json</a>` : ""}
-    ${native.debugLog ? `<a href="${native.debugLog}" target="_blank">maestro.log</a>` : ""}
-    ${native.failureScreenshot ? `<a class="fail" href="${native.failureScreenshot}" target="_blank">⚠ auto screenshot-on-failure</a>` : ""}
-  `;
-}
+document.getElementById("flow-nav-filter").addEventListener("input", (e) => {
+  flowNavFilterText = e.target.value;
+  renderFlowNav();
+});
 
 const STATUS_ICON = { COMPLETED: "✅", SKIPPED: "⏭️", WARNED: "⚠️", FAILED: "❌" };
 
@@ -245,6 +335,80 @@ function renderCommandNode(entry, metadata, recordingStartTs, metadataByCommand,
       <span class="step-duration">${timeText}</span>
     </div>`;
 }
+
+// Every takeScreenshotCommand in stepsData already carries its own real execution metadata
+// (see the flattening note above renderCommandNode) — no separate dedup pass needed, just sort
+// by timestamp and match each to its file via screenshotForCommand(). Without commands.json,
+// there's no capture order to recover, so fall back to scan.js's on-disk listing as-is.
+function computeOrderedScreenshots() {
+  const flow = currentFlow();
+  const data = flow.stepsData;
+  if (!data || data.length === 0) {
+    return (flow.screenshots || []).map((s) => ({ screenshot: s, seekSeconds: null, label: null }));
+  }
+  const startEntry = data.find((d) => Object.keys(d.command)[0] === "startRecordingCommand");
+  const startTs = startEntry ? startEntry.metadata.timestamp : null;
+  return [...data]
+    .sort((a, b) => a.metadata.timestamp - b.metadata.timestamp)
+    .filter((d) => Object.keys(d.command)[0] === "takeScreenshotCommand")
+    .map((d) => {
+      const body = d.command.takeScreenshotCommand;
+      const screenshot = screenshotForCommand("takeScreenshotCommand", body);
+      if (!screenshot) return null;
+      const seekSeconds = startTs != null ? Math.max(0, (d.metadata.timestamp - startTs) / 1000) : null;
+      return { screenshot, seekSeconds, label: body.label || null };
+    })
+    .filter(Boolean);
+}
+
+function renderScreenshotsTab() {
+  const el = document.getElementById("screenshots-section");
+  const ordered = computeOrderedScreenshots();
+  const hasStepsData = !!(currentFlow().stepsData && currentFlow().stepsData.length);
+
+  if (ordered.length === 0) {
+    el.innerHTML = `<div class="steps-error">No screenshots captured for this flow.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    ${hasStepsData ? "" : `<div class="seek-hint" style="margin-bottom:12px;">No commands.json for this flow — showing on-disk order, not confirmed capture order.</div>`}
+    <div class="screenshot-grid">
+      ${ordered
+        .map(
+          (o, i) => `
+        <figure class="screenshot-card" data-index="${i}">
+          <img src="${o.screenshot.src}" alt="${escapeHtml(o.label || o.screenshot.name)}" />
+          <figcaption>
+            <span class="sc-index">${i + 1}</span>
+            <span class="sc-name">${escapeHtml(o.label || o.screenshot.name)}</span>
+            ${o.seekSeconds != null ? `<span class="sc-seek">${formatSeek(o.seekSeconds)}</span>` : ""}
+          </figcaption>
+        </figure>`
+        )
+        .join("")}
+    </div>`;
+
+  el.querySelectorAll(".screenshot-card img").forEach((img, i) => {
+    img.addEventListener("click", () => openLightbox(ordered[i].screenshot.src));
+  });
+}
+
+let activeTab = "steps";
+
+function renderTabs() {
+  document.querySelectorAll(".pr-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === activeTab));
+  document.getElementById("steps-section").hidden = activeTab !== "steps";
+  document.getElementById("screenshots-section").hidden = activeTab !== "screenshots";
+  if (activeTab === "screenshots") renderScreenshotsTab();
+}
+
+document.querySelectorAll(".pr-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    activeTab = btn.dataset.tab;
+    renderTabs();
+  });
+});
 
 // Per-flow state — reset in renderSteps() whenever the current flow changes.
 let STEPS_DATA = null;
@@ -502,7 +666,6 @@ function renderSteps() {
 
   el.innerHTML = `
     <div class="steps-header">
-      <h3 style="color:var(--text-dim); font-weight: 500; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em; margin: 0;">Test Steps — click a row (or ↑/↓) to jump the video there</h3>
       <button id="steps-settings-btn" class="settings-btn" title="Show/hide command types">&#9881;</button>
       <div id="steps-settings-popup" class="settings-popup" hidden></div>
     </div>
@@ -511,7 +674,7 @@ function renderSteps() {
       <div class="steps-col"><ul class="steps-tree" id="steps-list"></ul></div>
       <div class="video-col">
         ${flow.video ? `<video id="steps-video" src="${flow.video}" controls></video>` : `<div class="steps-error">No recording for this flow.</div>`}
-        <div class="seek-hint">${RECORDING_START_TS && RECORDING_STOP_TS ? "Timestamps calibrated to the real recording length — still approximate; see comment in source." : "Recording start/stop not both found; steps aren't seekable."}</div>
+        ${RECORDING_START_TS && RECORDING_STOP_TS ? "" : `<div class="seek-hint">Recording start/stop not both found; steps aren't seekable.</div>`}
       </div>
     </div>`;
 
@@ -542,19 +705,90 @@ function renderSteps() {
 }
 
 function renderMain() {
-  document.getElementById("flow-title").textContent = currentFlow().label;
+  const flow = currentFlow();
+  document.getElementById("flow-title").textContent = flow.label;
+  document.getElementById("flow-key-tag").textContent = currentFlowKey();
+  const pill = document.getElementById("flow-status-pill");
+  pill.className = `flow-status-pill ${flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown"}`;
+  pill.textContent = flow.passed === true ? "Passed" : flow.passed === false ? "Failed" : "No steps";
   renderFlowNav();
-  renderNativePanel();
   renderSteps();
+  document.getElementById("screenshots-tab-count").textContent = computeOrderedScreenshots().length;
+  activeTab = "steps";
+  renderTabs();
 }
 
 const lightbox = document.getElementById("lightbox");
 const lightboxImg = document.getElementById("lightbox-img");
+const lightboxCaption = document.getElementById("lightbox-caption");
+const lightboxPrevBtn = document.getElementById("lightbox-prev");
+const lightboxNextBtn = document.getElementById("lightbox-next");
+const lightboxFilmstrip = document.getElementById("lightbox-filmstrip");
+
+// The lightbox always navigates the *current flow's full capture-order list* (same one the
+// Screenshots tab shows), regardless of whether it was opened from a step row's inline
+// thumbnail or from that tab — so ←/→ always means "previous/next screenshot taken", not
+// "next thumbnail in whichever list happened to render it".
+let lightboxList = [];
+let lightboxIndex = -1;
+
+// The filmstrip's <img> elements are only rebuilt here (once per open), not on every nav step —
+// renderLightboxContent() just toggles .active and scrolls, so stepping through never reloads
+// or flickers thumbnails that are already in the DOM.
+function buildLightboxFilmstrip() {
+  lightboxFilmstrip.innerHTML = lightboxList
+    .map((o, i) => `<img class="filmstrip-thumb" data-index="${i}" src="${o.screenshot.src}" alt="" />`)
+    .join("");
+  lightboxFilmstrip.hidden = lightboxList.length < 2;
+  lightboxFilmstrip.querySelectorAll(".filmstrip-thumb").forEach((thumb) => {
+    thumb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      lightboxIndex = Number(thumb.dataset.index);
+      renderLightboxContent();
+    });
+  });
+}
+
+function renderLightboxContent() {
+  const item = lightboxList[lightboxIndex];
+  if (!item) return;
+  lightboxImg.src = item.screenshot.src;
+  const name = item.label || item.screenshot.name;
+  const time = item.seekSeconds != null ? formatSeek(item.seekSeconds) : null;
+  lightboxCaption.innerHTML = `<span class="lb-name">${escapeHtml(name)}</span>${
+    time ? `<span class="lb-time">${time}</span>` : ""
+  }`;
+  const hasMultiple = lightboxList.length > 1;
+  lightboxPrevBtn.hidden = !hasMultiple;
+  lightboxNextBtn.hidden = !hasMultiple;
+
+  lightboxFilmstrip.querySelectorAll(".filmstrip-thumb").forEach((thumb, i) => {
+    thumb.classList.toggle("active", i === lightboxIndex);
+  });
+  const activeThumb = lightboxFilmstrip.querySelector(".filmstrip-thumb.active");
+  if (activeThumb) activeThumb.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+}
+
 function openLightbox(src) {
-  lightboxImg.src = src;
+  lightboxList = computeOrderedScreenshots();
+  const found = lightboxList.findIndex((o) => o.screenshot.src === src);
+  lightboxIndex = found === -1 ? 0 : found;
+  buildLightboxFilmstrip();
+  renderLightboxContent();
   lightbox.classList.add("open");
 }
+
+function lightboxStep(delta) {
+  if (lightboxList.length === 0) return;
+  lightboxIndex = (lightboxIndex + delta + lightboxList.length) % lightboxList.length;
+  renderLightboxContent();
+}
+
 lightbox.addEventListener("click", () => lightbox.classList.remove("open"));
+lightboxPrevBtn.addEventListener("click", (e) => { e.stopPropagation(); lightboxStep(-1); });
+lightboxNextBtn.addEventListener("click", (e) => { e.stopPropagation(); lightboxStep(1); });
+lightboxCaption.addEventListener("click", (e) => e.stopPropagation());
+lightboxFilmstrip.addEventListener("click", (e) => e.stopPropagation());
 
 // Space toggles video play/pause; up/down arrow keys move the current-step selection and seek
 // the video there. preventDefault on Space covers two things at once: the page's own default
@@ -564,6 +798,14 @@ lightbox.addEventListener("click", () => lightbox.classList.remove("open"));
 document.addEventListener("keydown", (e) => {
   const tag = document.activeElement.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) return;
+
+  // While the lightbox is open, ←/→ own the keyboard (step through screenshots) instead of
+  // the background step list's ↑/↓ or space — the video/steps behind it aren't visible anyway.
+  if (lightbox.classList.contains("open")) {
+    if (e.key === "ArrowLeft") { e.preventDefault(); lightboxStep(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); lightboxStep(1); }
+    return;
+  }
 
   if (e.key === " " || e.code === "Space") {
     e.preventDefault();
@@ -580,5 +822,30 @@ document.addEventListener("keydown", (e) => {
   const nextIdx = Math.max(0, Math.min(SEEKABLE_NODES.length - 1, currentIdx + delta));
   selectStep(SEEKABLE_NODES[nextIdx]);
 });
+
+// Sidebar collapse — localStorage is wrapped in try/catch since some browsers throw on it for
+// file:// origins (opening the report directly rather than through the recommended local server
+// still needs to work; only the "remember it across reloads" part is allowed to silently fail).
+const NAV_COLLAPSED_KEY = "maestroReportNavCollapsed";
+const flowNavWrap = document.getElementById("flow-nav-wrap");
+const flowNavCollapseBtn = document.getElementById("flow-nav-collapse-btn");
+const flowNavExpandBtn = document.getElementById("flow-nav-expand-btn");
+
+function setNavCollapsed(collapsed) {
+  flowNavWrap.hidden = collapsed;
+  flowNavExpandBtn.hidden = !collapsed;
+  try {
+    localStorage.setItem(NAV_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {}
+}
+
+flowNavCollapseBtn.addEventListener("click", () => setNavCollapsed(true));
+flowNavExpandBtn.addEventListener("click", () => setNavCollapsed(false));
+
+let storedNavCollapsed = false;
+try {
+  storedNavCollapsed = localStorage.getItem(NAV_COLLAPSED_KEY) === "1";
+} catch {}
+setNavCollapsed(storedNavCollapsed);
 
 renderMain();

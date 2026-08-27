@@ -1,11 +1,16 @@
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1f232c;
-  --border: #2b303b;
-  --text: #e6e8ec;
-  --text-dim: #9aa1ad;
-  --accent: #5b8cff;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --green-bg: #238636;
+  --red: #f85149;
+  --red-bg: #8e1519;
+  --tab-active: #f78166;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -22,45 +27,115 @@ h1, h2, h3 { margin: 0 0 8px; font-weight: 600; }
 /* ---------- Two independent scrollviews: left nav, main pane ---------- */
 .page-shell { flex: 1 1 auto; min-height: 0; display: flex; }
 .flow-nav {
-  flex: 0 0 220px; overflow-y: auto; background: var(--panel);
-  border-right: 1px solid var(--border); padding: 16px 0;
+  flex: 0 0 260px; overflow-y: auto; background: var(--panel);
+  border-right: 1px solid var(--border); padding: 12px 0;
+}
+.flow-nav-header-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0 12px; margin-bottom: 10px;
 }
 .flow-nav-title {
-  color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em;
-  padding: 0 16px; margin-bottom: 10px;
+  color: var(--text-dim); text-transform: uppercase; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.02em;
 }
+.nav-toggle-btn {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; background: none; border: none; border-radius: 6px;
+  color: var(--text-dim); cursor: pointer;
+}
+.nav-toggle-btn svg { width: 16px; height: 16px; }
+.nav-toggle-btn:hover { background: var(--panel-2); color: var(--text); }
+.nav-toggle-btn[hidden] { display: none; }
+.nav-expand-btn { margin-right: 2px; }
+.flow-nav-filter {
+  margin: 0 12px 10px; padding: 5px 10px 5px 28px; width: calc(100% - 24px);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 12px; outline: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'%3E%3Cpath fill='%238b949e' d='M10.68 11.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06zM11.5 7a4.5 4.5 0 1 0-9 0 4.5 4.5 0 0 0 9 0'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 9px center;
+}
+.flow-nav-filter:focus { border-color: var(--accent); }
+.flow-nav-filter::placeholder { color: var(--text-dim); }
 .flow-nav-item {
-  padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim);
-  border-left: 2px solid transparent;
+  display: flex; align-items: center; gap: 6px; margin: 0 8px; padding: 5px 8px;
+  cursor: pointer; font-size: 13px; color: var(--text-dim); border-radius: 6px;
 }
+.flow-nav-icon { flex: 0 0 auto; width: 16px; height: 16px; }
+.flow-nav-item .flow-nav-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-nav-item:hover { background: var(--panel-2); }
-.flow-nav-item.active { color: var(--text); border-left-color: var(--accent); background: var(--panel-2); }
-.flow-nav-status { margin-right: 6px; }
+.flow-nav-item.active { color: var(--text); font-weight: 600; background: var(--panel-2); }
+.flow-nav-status { margin-right: 2px; flex: 0 0 auto; display: inline-flex; }
+.flow-nav-empty { padding: 8px 16px; color: var(--text-dim); font-size: 12px; }
+
+/* Grouping folders in the flow tree — same row shape as .flow-nav-item, but a <summary> that
+   toggles its <details> instead of selecting a flow. */
+.flow-nav-folder-row {
+  display: flex; align-items: center; gap: 6px; margin: 0 8px; padding: 5px 8px;
+  cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-dim); border-radius: 6px;
+  list-style: none;
+}
+.flow-nav-folder-row::-webkit-details-marker { display: none; }
+.flow-nav-folder-row::marker { display: none; content: ""; }
+.flow-nav-folder-row:hover { background: var(--panel-2); }
+.flow-nav-folder-row .disclosure-chevron { width: 14px; height: 14px; }
+.flow-nav-folder[open] > .flow-nav-folder-row .disclosure-chevron { transform: rotate(90deg); }
+.flow-nav-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* page-main itself never scrolls — it's a fixed-height column. The header stays pinned
    (it's just a normal flex item, not part of any scroll flow); only .steps-col below
    scrolls internally, so nav-scroll and steps-scroll are the two real scroll regions. */
 .page-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---------- Main header: flow title + Maestro's own report links (pinned, doesn't scroll) ---------- */
-.main-header {
-  flex: 0 0 auto;
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
-  padding: 24px 24px 0; margin-bottom: 16px; flex-wrap: wrap;
+.main-header { flex: 0 0 auto; border-bottom: 1px solid var(--border); }
+.main-header-title-row {
+  display: flex; align-items: center; gap: 10px; padding: 18px 24px 14px;
 }
-.native-panel {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 14px; font-size: 12px; flex: 0 0 auto;
+.flow-status-pill {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 2em; font-size: 12px; font-weight: 600; color: #fff;
 }
-.native-panel .title { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; margin-bottom: 6px; }
-.native-panel a { display: block; color: var(--accent); text-decoration: none; padding: 2px 0; }
-.native-panel a:hover { text-decoration: underline; }
-.native-panel .fail { color: #ff8080; }
+.flow-status-pill.passed { background: var(--green-bg); }
+.flow-status-pill.failed { background: var(--red-bg); }
+.flow-status-pill.unknown { background: var(--panel-2); color: var(--text-dim); }
+#flow-title { font-size: 20px; }
+.flow-key-tag {
+  color: var(--text-dim); font-size: 12px; font-family: ui-monospace, "SF Mono", monospace;
+}
+/* ---------- Tab bar (Steps / Screenshots), GitHub PR-tab style ---------- */
+.pr-tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border); }
+.pr-tab {
+  background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-dim);
+  font: inherit; font-size: 13px; font-weight: 500; padding: 10px 8px; margin: 0 4px -1px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.pr-tab:hover { color: var(--text); }
+.pr-tab.active { color: var(--text); border-bottom-color: var(--tab-active); font-weight: 600; }
+.pr-tab .tab-count {
+  background: var(--panel-2); color: var(--text-dim); border-radius: 2em; font-size: 11px;
+  padding: 1px 7px; font-weight: 600;
+}
+
+/* ---------- Screenshots tab: capture-order grid ---------- */
+.screenshot-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;
+  overflow-y: auto; align-content: start;
+}
+.screenshot-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.screenshot-card img { width: 100%; display: block; aspect-ratio: 9 / 16; object-fit: cover; cursor: zoom-in; background: #000; }
+.screenshot-card figcaption { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 12px; }
+.sc-index {
+  flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%; background: var(--panel-2);
+  color: var(--text-dim); font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
+}
+.sc-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.sc-seek { flex: 0 0 auto; color: var(--text-dim); font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; }
 
 /* ---------- Steps + synced video ---------- */
 /* .steps-section fills the remaining height below the pinned header; .steps-synced is its
    body, stretched to that full height so the video can grow to fill it while .steps-col
    scrolls internally. */
-.steps-section { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 0 24px 24px; }
+.steps-section { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 16px 24px 24px; }
+.steps-section[hidden] { display: none; }
 .steps-header, .steps-summary { flex: 0 0 auto; }
 .steps-synced { flex: 1 1 auto; min-height: 0; display: flex; gap: 24px; align-items: stretch; }
 .steps-col { flex: 1 1 380px; min-width: 320px; overflow-y: auto; }
@@ -105,13 +180,48 @@ h1, h2, h3 { margin: 0 0 8px; font-weight: 600; }
 }
 .steps-loading, .steps-error { color: var(--text-dim); font-size: 13px; }
 
-/* ---------- Screenshot lightbox (opened from a step's inline thumbnail) ---------- */
+/* ---------- Screenshot lightbox (opened from a step's inline thumbnail or the Screenshots tab) ---------- */
 .lightbox {
   position: fixed; inset: 0; background: rgba(0,0,0,0.85);
-  display: none; align-items: center; justify-content: center; z-index: 200; cursor: zoom-out;
+  display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  z-index: 200; cursor: zoom-out;
 }
 .lightbox.open { display: flex; }
-.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
+.lightbox img { max-width: 92vw; max-height: 64vh; border-radius: 6px; }
+.lightbox-caption {
+  display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; cursor: default;
+}
+.lightbox-caption .lb-time {
+  color: var(--text-dim); font-family: ui-monospace, "SF Mono", monospace; font-size: 12px;
+}
+
+/* Photos-app-style filmstrip, pinned to the true bottom of the viewport (not part of the
+   centered image+caption flex stack) so it stays put regardless of image aspect ratio. */
+.lightbox-filmstrip {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 205;
+  display: flex; gap: 8px; padding: 12px 20px; overflow-x: auto;
+  background: rgba(13, 17, 23, 0.92); border-top: 1px solid var(--border); cursor: default;
+}
+.lightbox-filmstrip[hidden] { display: none; }
+/* Height-fixed, width-auto (not a fixed square) so each thumb keeps its screenshot's real
+   aspect ratio instead of cropping a portrait phone screenshot down to a square. */
+.filmstrip-thumb {
+  flex: 0 0 auto; height: 64px; width: auto; max-width: 120px; object-fit: contain;
+  background: #000; border-radius: 6px; border: 2px solid transparent; opacity: 0.5;
+  cursor: pointer; transition: opacity 0.1s, border-color 0.1s;
+}
+.filmstrip-thumb:hover { opacity: 0.85; }
+.filmstrip-thumb.active { opacity: 1; border-color: var(--accent); }
+.lightbox-nav {
+  position: fixed; top: 50%; transform: translateY(-50%); z-index: 210;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  width: 44px; height: 44px; border-radius: 50%; font-size: 24px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.lightbox-nav:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lightbox-nav[hidden] { display: none; }
+.lightbox-prev { left: 24px; }
+.lightbox-next { right: 24px; }
 
 /* ---------- Step details tooltip (hover a row to see its raw parameters) ---------- */
 .step-tooltip {

@@ -73,7 +73,7 @@ function scanFlow(flowDir, flowKey) {
 
   return {
     key: flowKey,
-    label: humanize(flowKey),
+    label: humanize(flowKey.split("/").pop()),
     passed,
     videoFile: fs.existsSync(videoPath) ? videoPath : null,
     screenshots,
@@ -85,10 +85,28 @@ function scanFlow(flowDir, flowKey) {
   };
 }
 
-// Each direct subdirectory of the artifacts root is treated as one flow — matching the
-// maestro/.artifacts/<flowName>/ shape the SAVE_ARTIFACTS pattern writes.
+// A directory "is" a flow (a leaf) once it has any of the files SAVE_ARTIFACTS/native-reporting
+// actually writes into it — otherwise it's just a grouping folder the user organized flows
+// under (e.g. `.artifacts/retirement/viewDashboard`), and discovery recurses into it instead.
+function looksLikeFlowDir(dir) {
+  if (fs.existsSync(path.join(dir, "recording.mp4"))) return true;
+  if (fs.existsSync(path.join(dir, "report.html"))) return true;
+  if (fs.existsSync(path.join(dir, "_maestro-native"))) return true;
+  return listFiles(dir).some((name) => name.toLowerCase().endsWith(".png"));
+}
+
+// Depth-first so a flow nested arbitrarily deep under grouping folders is still found; flowKey
+// is the "/"-joined path from the artifacts root, which doubles as both the manifest key and
+// the folder path the left nav's tree is built from (see renderFlowNav in app.js).
+function findFlowDirs(dir, flowKey) {
+  if (looksLikeFlowDir(dir)) return [{ dir, flowKey }];
+  return listDirs(dir).flatMap((name) =>
+    findFlowDirs(path.join(dir, name), flowKey ? `${flowKey}/${name}` : name)
+  );
+}
+
 function scanArtifactsRoot(rootDir) {
-  return listDirs(rootDir).map((flowKey) => scanFlow(path.join(rootDir, flowKey), flowKey));
+  return findFlowDirs(rootDir, "").map(({ dir, flowKey }) => scanFlow(dir, flowKey));
 }
 
 module.exports = { scanArtifactsRoot };
