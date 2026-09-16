@@ -26,22 +26,61 @@ function humanize(name) {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
 }
 
-// A flow can be run more than once, each run getting its own _maestro-native/<timestamp>/
-// directory. Timestamps are formatted YYYY-MM-DD_HHMMSS, which sorts correctly as plain
-// strings, so the lexicographically last one is the most recent run.
-function findLatestTimestampDir(nativeDir) {
+// A flow can be run more than once (a retry, or several manual re-runs), each getting its own
+// _maestro-native/<timestamp>/ directory. Timestamps are formatted YYYY-MM-DD_HHMMSS, which
+// sorts correctly as plain strings.
+function findTimestampDirs(nativeDir) {
   const dirs = listDirs(nativeDir).filter((d) => d !== "debug" && d !== "screenshots");
-  if (dirs.length === 0) return null;
   dirs.sort();
-  return dirs[dirs.length - 1];
+  return dirs;
 }
 
-function findDebugLog(nativeDir) {
+// The debug log directory (_maestro-native/debug/.maestro/tests/<timestamp>/) is keyed by its
+// own timestamp, written by a separate --debug-output invocation than the one that produced a
+// given _maestro-native/<timestamp>/ commands.json dir. There's no guaranteed 1:1 correspondence
+// between the two timestamp sets, so debug logs are matched to a run by closest-preceding
+// timestamp (the debug log for a run is written moments before/around the same invocation),
+// falling back to the single most recent log if a run's own timestamp sorts before every log.
+function findDebugLogDirs(nativeDir) {
   const debugTestsDir = path.join(nativeDir, "debug", ".maestro", "tests");
-  const dirs = listDirs(debugTestsDir).sort();
-  if (dirs.length === 0) return null;
-  const logPath = path.join(debugTestsDir, dirs[dirs.length - 1], "maestro.log");
+  return listDirs(debugTestsDir).sort();
+}
+
+function debugLogForRunTimestamp(nativeDir, runTimestamp, debugLogDirs) {
+  if (debugLogDirs.length === 0) return null;
+  const candidates = debugLogDirs.filter((d) => d <= runTimestamp);
+  const chosen = candidates.length > 0 ? candidates[candidates.length - 1] : debugLogDirs[debugLogDirs.length - 1];
+  const logPath = path.join(nativeDir, "debug", ".maestro", "tests", chosen, "maestro.log");
   return fs.existsSync(logPath) ? logPath : null;
+}
+
+// One run's worth of native-reporting data (one _maestro-native/<timestamp>/ directory).
+function scanRun(nativeDir, timestamp, debugLogDirs) {
+  const tsDirPath = path.join(nativeDir, timestamp);
+  const files = listFiles(tsDirPath);
+
+  let commandsJsonFile = null;
+  let stepsData = null;
+  let passed = null;
+  const commandsFile = files.find((f) => f.startsWith("commands-") && f.endsWith(".json"));
+  if (commandsFile) {
+    commandsJsonFile = path.join(tsDirPath, commandsFile);
+    stepsData = JSON.parse(fs.readFileSync(commandsJsonFile, "utf8"));
+    passed = !stepsData.some((d) => d.metadata && d.metadata.status === "FAILED");
+  }
+
+  let failureScreenshotFile = null;
+  const failFile = files.find((f) => f.startsWith("screenshot-") && f.toLowerCase().endsWith(".png"));
+  if (failFile) failureScreenshotFile = path.join(tsDirPath, failFile);
+
+  return {
+    timestamp,
+    passed,
+    stepsData,
+    commandsJsonFile,
+    failureScreenshotFile,
+    debugLogFile: debugLogForRunTimestamp(nativeDir, timestamp, debugLogDirs),
+  };
 }
 
 function scanFlow(flowDir, flowKey) {
@@ -51,37 +90,27 @@ function scanFlow(flowDir, flowKey) {
     .map((name) => ({ name: path.basename(name, path.extname(name)), file: path.join(flowDir, name) }));
   const reportHtmlPath = path.join(flowDir, "report.html");
   const nativeDir = path.join(flowDir, "_maestro-native");
-  const latestTsDir = findLatestTimestampDir(nativeDir);
 
-  let commandsJsonFile = null;
-  let failureScreenshotFile = null;
-  let stepsData = null;
-  let passed = null;
-
-  if (latestTsDir) {
-    const tsDirPath = path.join(nativeDir, latestTsDir);
-    const files = listFiles(tsDirPath);
-    const commandsFile = files.find((f) => f.startsWith("commands-") && f.endsWith(".json"));
-    if (commandsFile) {
-      commandsJsonFile = path.join(tsDirPath, commandsFile);
-      stepsData = JSON.parse(fs.readFileSync(commandsJsonFile, "utf8"));
-      passed = !stepsData.some((d) => d.metadata && d.metadata.status === "FAILED");
-    }
-    const failFile = files.find((f) => f.startsWith("screenshot-") && f.toLowerCase().endsWith(".png"));
-    if (failFile) failureScreenshotFile = path.join(tsDirPath, failFile);
-  }
+  const debugLogDirs = findDebugLogDirs(nativeDir);
+  const runs = findTimestampDirs(nativeDir).map((ts) => scanRun(nativeDir, ts, debugLogDirs));
+  // Most-recent-first isn't right either: retry order matters ("run 1, run 2, ... until it
+  // passes"), so keep chronological (ascending) order — the UI numbers them 1..N in this order.
+  const latestRun = runs.length > 0 ? runs[runs.length - 1] : null;
 
   return {
     key: flowKey,
     label: humanize(flowKey.split("/").pop()),
-    passed,
+    // Overall pass/fail reflects the most recent attempt, matching retry semantics (a flow
+    // that failed once then passed on retry should read as passing overall).
+    passed: latestRun ? latestRun.passed : null,
     videoFile: fs.existsSync(videoPath) ? videoPath : null,
     screenshots,
     reportHtmlFile: fs.existsSync(reportHtmlPath) ? reportHtmlPath : null,
-    commandsJsonFile,
-    debugLogFile: findDebugLog(nativeDir),
-    failureScreenshotFile,
-    stepsData,
+    commandsJsonFile: latestRun ? latestRun.commandsJsonFile : null,
+    debugLogFile: latestRun ? latestRun.debugLogFile : null,
+    failureScreenshotFile: latestRun ? latestRun.failureScreenshotFile : null,
+    stepsData: latestRun ? latestRun.stepsData : null,
+    runs,
   };
 }
 

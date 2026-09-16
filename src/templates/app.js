@@ -56,8 +56,64 @@ function currentFlowKey() {
   return MANIFEST[f] ? f : Object.keys(MANIFEST)[0];
 }
 
+// Which run (retry attempt) is selected per flow key, keyed so switching flows and back
+// remembers your choice. Undefined/missing means "the latest run" — the common case, and the
+// only case for a flow that only ran once.
+const selectedRunByFlow = new Map();
+
+function selectedRunIndex(flowKey, flow) {
+  if (!flow.runs || flow.runs.length === 0) return null;
+  const chosen = selectedRunByFlow.get(flowKey);
+  if (chosen != null && chosen >= 0 && chosen < flow.runs.length) return chosen;
+  return flow.runs.length - 1; // default: latest attempt
+}
+
+// The base flow record from manifest.js, with stepsData/passed/failure-screenshot overridden to
+// whichever run is currently selected (see selectedRunByFlow). Video/screenshots are never
+// overridden — those aren't versioned per run (see the note in bin/build.js) — so every other
+// piece of code that reads currentFlow() keeps working unmodified whether or not the flow has
+// run-history at all.
+//
+// The latest run is the fast path and deliberately skips all of this: manifest.js's top-level
+// stepsData/passed/native already *are* the latest run's data (scan.js populates them that
+// way), so re-deriving them here would just mean losing them until a fetch() resolves for the
+// single most common case (a flow that only ran once, or hasn't had an older run explicitly
+// picked). Only a genuinely non-default selection pays the lazy-fetch cost.
 function currentFlow() {
-  return MANIFEST[currentFlowKey()];
+  const key = currentFlowKey();
+  const flow = MANIFEST[key];
+  if (!flow || !flow.runs || flow.runs.length === 0) return flow;
+  const idx = selectedRunIndex(key, flow);
+  if (idx === flow.runs.length - 1) return flow;
+  const run = flow.runs[idx];
+  return {
+    ...flow,
+    passed: run.passed,
+    stepsData: run.commandsJson ? RUN_STEPS_CACHE.get(run.commandsJson) || [] : [],
+    native: flow.native ? { ...flow.native, failureScreenshot: run.failureScreenshot || null } : flow.native,
+  };
+}
+
+// Each run's commands.json is fetched lazily on first selection rather than inlined into
+// MANIFEST — a flow with several retries would otherwise multiply the already-large embedded
+// step-tree payload by its run count for every flow, on every page load, even for runs nobody
+// looks at.
+const RUN_STEPS_CACHE = new Map();
+
+function selectRun(flowKey, index) {
+  selectedRunByFlow.set(flowKey, index);
+  const flow = MANIFEST[flowKey];
+  const run = flow.runs[index];
+  if (run.commandsJson && !RUN_STEPS_CACHE.has(run.commandsJson)) {
+    fetch(run.commandsJson)
+      .then((r) => r.json())
+      .then((data) => {
+        RUN_STEPS_CACHE.set(run.commandsJson, data);
+        if (currentFlowKey() === flowKey) renderFlowMainView();
+      })
+      .catch(() => RUN_STEPS_CACHE.set(run.commandsJson, []));
+  }
+  renderFlowMainView();
 }
 
 function setFlow(key) {
@@ -68,6 +124,32 @@ function setFlow(key) {
   // flow's steps" — even if the Snapshots page was open when it was clicked.
   currentView = "flow";
   renderMain();
+}
+
+function renderRunHistory() {
+  const container = document.getElementById("run-history");
+  const key = currentFlowKey();
+  const flow = MANIFEST[key];
+  if (!flow || !flow.runs || flow.runs.length < 2) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  const activeIdx = selectedRunIndex(key, flow);
+  container.hidden = false;
+  container.innerHTML =
+    `<span class="run-history-label">${flow.runs.length} runs — retried until it ${flow.passed ? "passed" : "still failed"}:</span>` +
+    flow.runs
+      .map((run, i) => {
+        const statusClass = run.passed === true ? "passed" : run.passed === false ? "failed" : "";
+        return `<button class="run-pill ${statusClass} ${i === activeIdx ? "active" : ""}" data-run-index="${i}">
+          <span class="run-pill-dot"></span>Run ${run.index}
+        </button>`;
+      })
+      .join("");
+  container.querySelectorAll(".run-pill").forEach((btn) => {
+    btn.addEventListener("click", () => selectRun(key, Number(btn.dataset.runIndex)));
+  });
 }
 
 // GitHub-style status dots (filled circle, check/x drawn as a stroke), swapped in for the
@@ -829,6 +911,7 @@ function renderFlowMainView() {
   const pill = document.getElementById("flow-status-pill");
   pill.className = `flow-status-pill ${flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown"}`;
   pill.textContent = flow.passed === true ? "Passed" : flow.passed === false ? "Failed" : "No steps";
+  renderRunHistory();
   renderSteps();
   restoreResizerSizes();
   document.getElementById("screenshots-tab-count").textContent = computeOrderedScreenshots(currentFlowKey()).length;
@@ -1090,3 +1173,15 @@ function restoreResizerSizes() {
 }
 
 renderMain();
+
+// ---------- Live reload (bin/build.js --watch --serve) ----------
+// window.LIVE_RELOAD is set by manifest.js at build time — a plain one-shot build never sets it
+// true, so this is a no-op for anyone not actively running --watch. Full page reload rather than
+// patching the DOM in place: a rebuild can add/remove flows entirely (a brand new retry attempt,
+// a flow that just started), and re-running the whole render pipeline from scratch is simpler
+// and more correct than trying to diff that live. EventSource auto-reconnects on its own after a
+// dropped connection (e.g. the server restarting), so no manual retry loop is needed here.
+if (window.LIVE_RELOAD) {
+  const source = new EventSource("/__live-reload");
+  source.onmessage = () => window.location.reload();
+}

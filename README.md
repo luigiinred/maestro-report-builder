@@ -146,16 +146,57 @@ tool works around cleverly. The `generate-report` skill runs both invocations fo
 Without installing anything, straight from GitHub:
 
 ```bash
-npx github:luigiinred/maestro-report-builder <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N]
+npx github:luigiinred/maestro-report-builder <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N] [--watch]
 ```
 
 Or from a local clone:
 
 ```bash
-node bin/build.js <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N]
+node bin/build.js <path-to-maestro-.artifacts-dir> [outputDir] [--serve] [--port N] [--watch]
 # e.g.
-node bin/build.js ~/Developer/your-app/maestro/.artifacts ./dist --serve
+node bin/build.js ~/Developer/your-app/maestro/.artifacts ./dist --serve --watch
 ```
+
+### Live reload (`--watch`)
+
+Pass `--watch` (alongside `--serve`) to keep rebuilding as the artifacts directory changes and
+push a reload to any open browser tab automatically — useful for watching a long-running test
+suite populate the report flow-by-flow instead of waiting for it to finish and re-running the
+build yourself. Implementation: `fs.watch(artifactsDir, { recursive: true })`, debounced 500ms,
+rebuilds the whole output on each change, and notifies connected tabs over a tiny built-in SSE
+endpoint (`/__live-reload`) that the client subscribes to when `window.LIVE_RELOAD` is set (only
+true when both `--watch` and `--serve` were passed — a plain one-shot build never touches it).
+The client does a full `location.reload()` rather than patching the DOM, since a rebuild can add
+or remove whole flows (a new retry attempt, a flow that just started), not just update one.
+
+`--watch`'s built-in server also sends `Cache-Control: no-store` on every response — the whole
+point is that the same URL (`manifest.js`, `recording.mp4`, a screenshot) can refer to genuinely
+different bytes across two loads (a rebuilt manifest, an attempt that overwrote the previous
+one's video), and a cached response would silently show stale data despite the reload firing.
+
+### Run history (retries / re-runs)
+
+If a flow's `_maestro-native/` directory has more than one timestamped subdirectory — i.e. it
+was run more than once, whether from Maestro's own `retry:` block, a shell loop that reran a
+failed flow, or just re-running the same flow by hand — the report shows a row of "Run 1", "Run
+2", ... pills under that flow's title (color-coded pass/fail), letting you flip between each
+attempt's step tree and failure screenshot without losing the flow's own video/screenshots
+(which aren't versioned per attempt — see `src/scan.js`/`bin/build.js`). A flow that only ran
+once shows nothing extra; this is purely additive.
+
+### A single run is enough for the "two-run gotcha" — on newer Maestro
+
+The section below (kept for older Maestro versions, and because the underlying cause is still
+worth knowing) describes needing two separate `maestro test` invocations to get both a step
+tree and correctly-placed video/screenshots. On Maestro 2.10.0 this isn't necessary: a single
+invocation with `-e SAVE_ARTIFACTS=true --test-output-dir X --debug-output Y --format
+HTML-DETAILED --output Z` writes `commands.json` **and** nests the explicit `startRecording`/
+`takeScreenshot` paths under `X/<timestamp>/<flow>/startRecording/` and `.../takeScreenshot/`
+(rather than at the flow's top level) in the same run. Both pieces of data are just in different
+places than a "plain" run would put them — there's nothing to merge from a second invocation.
+Confirmed by direct inspection of a real run's on-disk output; not documented anywhere in
+Maestro's own CLI help. If you hit the old two-run behavior on your Maestro version, the section
+below still applies.
 
 Or via npm script (defaults output to `./dist`):
 
