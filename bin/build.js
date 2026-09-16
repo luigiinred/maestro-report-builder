@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
-const { scanArtifactsRoot } = require("../src/scan");
+const { scanArtifactsRoot, scanSuiteStatus } = require("../src/scan");
 
 // --serve/--port/--watch are pulled out of argv before the two positional args are read, so
 // they can go anywhere on the command line.
@@ -46,7 +46,11 @@ let liveReloadEnabled = shouldWatch && shouldServe;
 // rebuilds outDir from scratch) — that's what --watch does on every filesystem change.
 function build({ quiet } = {}) {
   const flows = scanArtifactsRoot(artifactsDir);
-  if (flows.length === 0) {
+  const suiteStatus = scanSuiteStatus(artifactsDir);
+  // A suite runner writes _suite-status.json (and each flow's own _status.json) before any
+  // flow has produced real output — an empty artifacts dir at that exact moment is expected,
+  // not an error, as long as there's a suite status to show. Only bail if there's neither.
+  if (flows.length === 0 && !suiteStatus) {
     if (!quiet) console.error(`No flow subdirectories found in ${artifactsDir}`);
     return { flowCount: 0 };
   }
@@ -124,6 +128,8 @@ function build({ quiet } = {}) {
     manifest[flow.key] = {
       label: flow.label,
       passed: flow.passed,
+      running: flow.running,
+      runningAttempt: flow.runningAttempt,
       video,
       screenshots,
       native: Object.keys(native).length > 0 ? native : null,
@@ -134,7 +140,9 @@ function build({ quiet } = {}) {
 
   fs.writeFileSync(
     path.join(outDir, "manifest.js"),
-    `window.LIVE_RELOAD = ${liveReloadEnabled};\nwindow.MANIFEST = ${JSON.stringify(manifest, null, 2)};\n`
+    `window.LIVE_RELOAD = ${liveReloadEnabled};\n` +
+      `window.SUITE_STATUS = ${JSON.stringify(suiteStatus)};\n` +
+      `window.MANIFEST = ${JSON.stringify(manifest, null, 2)};\n`
   );
   fs.copyFileSync(path.join(templatesDir, "app.css"), path.join(outDir, "app.css"));
   fs.copyFileSync(path.join(templatesDir, "app.js"), path.join(outDir, "app.js"));
@@ -143,7 +151,7 @@ function build({ quiet } = {}) {
   if (!quiet) {
     console.log(`Built ${flows.length} flow(s) → ${outDir}`);
     flows.forEach((f) => {
-      const status = f.passed === true ? "PASSED" : f.passed === false ? "FAILED" : "no commands.json";
+      const status = f.running ? "RUNNING" : f.passed === true ? "PASSED" : f.passed === false ? "FAILED" : "no commands.json";
       const runsNote = f.runs && f.runs.length > 1 ? ` (${f.runs.length} runs)` : "";
       console.log(`  ${f.key}: ${status}${runsNote}`);
     });
