@@ -159,6 +159,11 @@ const NAV_STATUS_ICON = {
   false: `<svg class="flow-nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--red-bg)"/><path d="M5.3 5.3l5.4 5.4M10.7 5.3l-5.4 5.4" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>`,
   null: `<svg class="flow-nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="var(--text-dim)"/></svg>`,
 };
+// Spinning ring for a flow currently executing (flow.running from _status.json — see
+// src/scan.js). Checked ahead of NAV_STATUS_ICON[passed] in renderFlowNode: "running" always
+// wins visually over whatever the *previous* attempt's pass/fail was, since that's stale the
+// moment a new attempt starts.
+const NAV_STATUS_ICON_RUNNING = `<svg class="flow-nav-icon flow-nav-icon-spin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--border)" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="var(--yellow, #d29922)" stroke-width="2" stroke-linecap="round"/></svg>`;
 const FOLDER_ICON = `<svg class="flow-nav-icon" viewBox="0 0 16 16"><path fill="var(--text-dim)" d="M1.75 2.5A.75.75 0 0 1 2.5 1.75h3.19c.28 0 .55.11.75.31l1.06 1.06a.75.75 0 0 0 .53.22h5.27a.75.75 0 0 1 .75.75v8.66a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75V2.5Z"/></svg>`;
 
 let flowNavFilterText = "";
@@ -239,7 +244,7 @@ function renderFlowNode(node, active, depth) {
   if (node.type === "flow") {
     return `
       <div class="flow-nav-item${node.key === active ? " active" : ""}" data-flow-key="${node.key}" style="padding-left:${indent}px">
-        <span class="flow-nav-status">${NAV_STATUS_ICON[node.flow.passed]}</span><span class="flow-nav-label">${node.flow.label}</span>
+        <span class="flow-nav-status">${node.flow.running ? NAV_STATUS_ICON_RUNNING : NAV_STATUS_ICON[node.flow.passed]}</span><span class="flow-nav-label">${node.flow.label}</span>
       </div>`;
   }
   const children = sortedFlowChildren(node)
@@ -909,8 +914,14 @@ function renderFlowMainView() {
   document.getElementById("flow-title").textContent = flow.label;
   document.getElementById("flow-key-tag").textContent = currentFlowKey();
   const pill = document.getElementById("flow-status-pill");
-  pill.className = `flow-status-pill ${flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown"}`;
-  pill.textContent = flow.passed === true ? "Passed" : flow.passed === false ? "Failed" : "No steps";
+  pill.className = `flow-status-pill ${flow.running ? "running" : flow.passed === true ? "passed" : flow.passed === false ? "failed" : "unknown"}`;
+  pill.textContent = flow.running
+    ? `Running${flow.runningAttempt > 1 ? ` (attempt ${flow.runningAttempt})` : ""}…`
+    : flow.passed === true
+      ? "Passed"
+      : flow.passed === false
+        ? "Failed"
+        : "No steps";
   renderRunHistory();
   renderSteps();
   restoreResizerSizes();
@@ -919,7 +930,29 @@ function renderFlowMainView() {
   renderTabs();
 }
 
+// window.SUITE_STATUS comes from manifest.js — null unless a runner wrote _suite-status.json
+// at the artifacts root (see src/scan.js's scanSuiteStatus). Independent of any single flow's
+// own running state: this is "where is the suite as a whole" (which flow, which attempt, how
+// many done out of how many total), rendered as a bar across the very top of the page.
+function renderSuiteStatusBar() {
+  const bar = document.getElementById("suite-status-bar");
+  const status = window.SUITE_STATUS;
+  if (!status || status.state !== "running") {
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  bar.hidden = false;
+  const attemptNote = status.attempt > 1 ? ` (attempt ${status.attempt})` : "";
+  const progress = status.total ? `${status.index}/${status.total}` : "";
+  bar.innerHTML =
+    `<span class="suite-status-spinner"></span>` +
+    `<span>Running <strong>${escapeHtml(status.currentFlow || "")}</strong>${attemptNote}…</span>` +
+    `<span class="suite-status-progress">${progress}</span>`;
+}
+
 function renderMain() {
+  renderSuiteStatusBar();
   renderFlowNav();
   document.querySelectorAll(".view-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === currentView));
   updateSidebarVisibility();
